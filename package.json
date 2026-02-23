@@ -25,6 +25,7 @@
     "vite": "^7.3.1"
   },
   "dependencies": {
+    "coi-serviceworker": "^0.1.7",
     "hyparquet": "^1.25.0",
     "hyparquet-compressors": "^1.1.1",
     "mujoco-js": "^0.0.7",
