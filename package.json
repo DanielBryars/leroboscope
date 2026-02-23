@@ -1,0 +1,33 @@
+{
+  "name": "leroboscope",
+  "version": "1.0.0",
+  "description": "Browser-based MuJoCo dataset replay viewer for LeRobot datasets",
+  "type": "module",
+  "scripts": {
+    "dev": "vite",
+    "build": "tsc --noEmit && vite build",
+    "preview": "vite preview"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/DanielBryars/leroboscope.git"
+  },
+  "keywords": [],
+  "author": "",
+  "license": "ISC",
+  "bugs": {
+    "url": "https://github.com/DanielBryars/leroboscope/issues"
+  },
+  "homepage": "https://github.com/DanielBryars/leroboscope#readme",
+  "devDependencies": {
+    "@types/three": "^0.183.1",
+    "typescript": "^5.9.3",
+    "vite": "^7.3.1"
+  },
+  "dependencies": {
+    "hyparquet": "^1.25.0",
+    "hyparquet-compressors": "^1.1.1",
+    "mujoco-js": "^0.0.7",
+    "three": "^0.183.1"
+  }
+}
