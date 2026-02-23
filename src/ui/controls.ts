@@ -3,7 +3,7 @@ import type { PlaybackState } from '../types';
 /** All the UI elements we need */
 export interface UIElements {
   datasetInput: HTMLInputElement;
-  episodeSelect: HTMLSelectElement;
+  episodeList: HTMLElement;
   loadBtn: HTMLButtonElement;
   playPauseBtn: HTMLButtonElement;
   prevFrameBtn: HTMLButtonElement;
@@ -11,13 +11,14 @@ export interface UIElements {
   timeline: HTMLInputElement;
   frameInfo: HTMLSpanElement;
   speedSelect: HTMLSelectElement;
+  unitsSelect: HTMLSelectElement;
   datasetMeta: HTMLSpanElement;
 }
 
 export function getUIElements(): UIElements {
   return {
     datasetInput: document.getElementById('dataset-id') as HTMLInputElement,
-    episodeSelect: document.getElementById('episode-select') as HTMLSelectElement,
+    episodeList: document.getElementById('episode-list') as HTMLElement,
     loadBtn: document.getElementById('load-btn') as HTMLButtonElement,
     playPauseBtn: document.getElementById('play-pause') as HTMLButtonElement,
     prevFrameBtn: document.getElementById('prev-frame') as HTMLButtonElement,
@@ -25,22 +26,45 @@ export function getUIElements(): UIElements {
     timeline: document.getElementById('timeline') as HTMLInputElement,
     frameInfo: document.getElementById('frame-info') as HTMLSpanElement,
     speedSelect: document.getElementById('speed-select') as HTMLSelectElement,
+    unitsSelect: document.getElementById('units-select') as HTMLSelectElement,
     datasetMeta: document.getElementById('dataset-meta') as HTMLSpanElement,
   };
 }
 
 /**
- * Populate episode dropdown with a range of episode numbers.
+ * Populate episode list sidebar.
  */
-export function populateEpisodes(ui: UIElements, totalEpisodes: number): void {
-  ui.episodeSelect.innerHTML = '';
+export function populateEpisodes(
+  ui: UIElements,
+  totalEpisodes: number,
+  onSelect: (index: number) => void,
+): void {
+  ui.episodeList.innerHTML = '';
   for (let i = 0; i < totalEpisodes; i++) {
-    const opt = document.createElement('option');
-    opt.value = i.toString();
-    opt.textContent = `Episode ${i}`;
-    ui.episodeSelect.appendChild(opt);
+    const item = document.createElement('div');
+    item.className = 'episode-item';
+    item.dataset.episode = i.toString();
+    item.textContent = `Episode ${i}`;
+    item.addEventListener('click', () => onSelect(i));
+    ui.episodeList.appendChild(item);
   }
-  ui.episodeSelect.disabled = false;
+}
+
+/**
+ * Highlight the selected episode in the list.
+ */
+export function selectEpisodeInList(ui: UIElements, index: number): void {
+  // Remove previous selection
+  const prev = ui.episodeList.querySelector('.episode-item.active');
+  if (prev) prev.classList.remove('active');
+
+  // Select new
+  const item = ui.episodeList.querySelector(`[data-episode="${index}"]`);
+  if (item) {
+    item.classList.add('active');
+    // Scroll into view if needed
+    item.scrollIntoView({ block: 'nearest', behavior: 'smooth' });
+  }
 }
 
 /**
@@ -63,7 +87,7 @@ export function updatePlaybackUI(ui: UIElements, state: PlaybackState): void {
  * Set dataset metadata display.
  */
 export function setDatasetMeta(ui: UIElements, fps: number, totalEpisodes: number, totalFrames: number): void {
-  ui.datasetMeta.textContent = `${fps} fps | ${totalEpisodes} episodes | ${totalFrames} frames`;
+  ui.datasetMeta.textContent = `${fps} fps | ${totalEpisodes} ep | ${totalFrames} frames`;
 }
 
 /**

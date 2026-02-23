@@ -2,17 +2,21 @@ import { initMuJoCo } from './mujoco/loader';
 import { buildScene, updateBodyTransforms } from './mujoco/scene-builder';
 import { createRenderer } from './mujoco/renderer';
 import { loadDatasetContext, loadEpisode, type DatasetContext } from './dataset/episode-loader';
-import { autoConvertToRadians, getJointQposIndices, setJointPositions } from './replay/joint-mapper';
+import { convertToRadians, getJointQposIndices, setJointPositions, type UnitMode } from './replay/joint-mapper';
 import { PlaybackController } from './replay/playback-controller';
 import {
   getUIElements,
   populateEpisodes,
+  selectEpisodeInList,
   updatePlaybackUI,
   setDatasetMeta,
   applyUrlParams,
   updateUrlParams,
 } from './ui/controls';
 import { showLoading, showError, hideStatus } from './ui/status';
+import { JointChart } from './ui/chart';
+import { CameraPanel } from './ui/cameras';
+import { DEFAULT_DATASET } from './constants';
 import type { EpisodeData } from './types';
 
 // --- Global State ---
@@ -28,6 +32,17 @@ const playback = new PlaybackController();
 async function main() {
   const ui = getUIElements();
   const { dataset: urlDataset, episode: urlEpisode } = applyUrlParams(ui);
+
+  if (!urlDataset) {
+    ui.datasetInput.value = DEFAULT_DATASET;
+  }
+
+  // --- Init chart + cameras ---
+  const chart = new JointChart(document.getElementById('chart-panel')!);
+  const cameras = new CameraPanel(document.getElementById('camera-container')!);
+
+  // Chart click-to-seek
+  chart.onSeek = (frame) => playback.seek(frame);
 
   // --- 1. Initialize MuJoCo + Three.js ---
   showLoading('Initializing MuJoCo WASM...');
@@ -45,16 +60,14 @@ async function main() {
 
   showLoading('Building 3D scene...');
 
-  // Get joint qpos indices
   qposIndices = getJointQposIndices(mujoco, model);
+  console.log('Joint qpos indices:', qposIndices);
 
-  // Build Three.js scene from MuJoCo model
   const viewport = document.getElementById('viewport')!;
   const { scene, camera, renderer, controls } = createRenderer(viewport);
   const { bodyGroups, root } = buildScene(mujoco, model, data);
   scene.add(root);
 
-  // Initial transform update
   updateBodyTransforms(model, data, bodyGroups);
 
   hideStatus();
@@ -69,18 +82,25 @@ async function main() {
   renderLoop();
 
   // --- 3. Frame Update Callback ---
+  function getUnitMode(): UnitMode {
+    return ui.unitsSelect.value as UnitMode;
+  }
+
   function onFrame(frameIdx: number) {
     if (!currentEpisode || frameIdx >= currentEpisode.frames.length) return;
 
     const frame = currentEpisode.frames[frameIdx];
-    const radians = autoConvertToRadians(frame.state);
+    const radians = convertToRadians(frame.state, getUnitMode());
     setJointPositions(data, qposIndices, radians);
 
-    // Forward kinematics only (no physics step)
     mujoco.mj_forward(model, data);
-
-    // Update Three.js transforms
     updateBodyTransforms(model, data, bodyGroups);
+
+    // Update chart playhead
+    chart.setFrame(frameIdx);
+
+    // Sync camera videos
+    cameras.seekToFrame(frameIdx);
   }
 
   // --- 4. Playback Callbacks ---
@@ -90,40 +110,25 @@ async function main() {
 
   // --- 5. Wire UI Events ---
 
-  // Load dataset
-  async function loadDataset(repoId: string, episodeIdx?: number) {
-    showLoading(`Loading dataset: ${repoId}...`);
-    ui.loadBtn.disabled = true;
-
-    try {
-      datasetCtx = await loadDatasetContext(repoId);
-      const info = datasetCtx.info;
-
-      populateEpisodes(ui, info.total_episodes);
-      setDatasetMeta(ui, info.fps, info.total_episodes, info.total_frames);
-
-      // Select episode
-      const ep = episodeIdx !== undefined && episodeIdx < info.total_episodes ? episodeIdx : 0;
-      ui.episodeSelect.value = ep.toString();
-
-      await loadEpisodeData(ep);
-      updateUrlParams(repoId, ep);
-    } catch (err) {
-      showError(`Failed to load dataset: ${err}`);
-      console.error(err);
-    } finally {
-      ui.loadBtn.disabled = false;
-    }
-  }
-
-  // Load a specific episode
   async function loadEpisodeData(episodeIdx: number) {
     if (!datasetCtx) return;
     showLoading(`Loading episode ${episodeIdx}...`);
 
     try {
       currentEpisode = await loadEpisode(datasetCtx, episodeIdx);
+
+      // Log first frame for debugging
+      if (currentEpisode.frames.length > 0) {
+        const f0 = currentEpisode.frames[0];
+        console.log(`Episode ${episodeIdx}: ${currentEpisode.totalFrames} frames, ${currentEpisode.videos.length} cameras`);
+        console.log('  Frame 0 state:', f0.state);
+        console.log('  Frame 0 action:', f0.action);
+      }
+
       playback.loadEpisode(currentEpisode);
+      chart.loadEpisode(currentEpisode);
+      cameras.loadVideos(currentEpisode.videos, currentEpisode.fps, currentEpisode.totalFrames);
+      selectEpisodeInList(ui, episodeIdx);
       hideStatus();
       updateUrlParams(datasetCtx.repoId, episodeIdx);
     } catch (err) {
@@ -132,13 +137,32 @@ async function main() {
     }
   }
 
-  // Load button
+  async function loadDataset(repoId: string, episodeIdx?: number) {
+    showLoading(`Loading dataset: ${repoId}...`);
+    ui.loadBtn.disabled = true;
+
+    try {
+      datasetCtx = await loadDatasetContext(repoId);
+      const info = datasetCtx.info;
+
+      populateEpisodes(ui, info.total_episodes, (idx) => loadEpisodeData(idx));
+      setDatasetMeta(ui, info.fps, info.total_episodes, info.total_frames);
+
+      const ep = episodeIdx !== undefined && episodeIdx < info.total_episodes ? episodeIdx : 0;
+      await loadEpisodeData(ep);
+    } catch (err) {
+      showError(`Failed to load dataset: ${err}`);
+      console.error(err);
+    } finally {
+      ui.loadBtn.disabled = false;
+    }
+  }
+
   ui.loadBtn.addEventListener('click', () => {
     const repoId = ui.datasetInput.value.trim();
     if (repoId) loadDataset(repoId);
   });
 
-  // Enter key in dataset input
   ui.datasetInput.addEventListener('keydown', (e) => {
     if (e.key === 'Enter') {
       const repoId = ui.datasetInput.value.trim();
@@ -146,31 +170,25 @@ async function main() {
     }
   });
 
-  // Episode selection
-  ui.episodeSelect.addEventListener('change', () => {
-    const ep = parseInt(ui.episodeSelect.value, 10);
-    if (!isNaN(ep)) loadEpisodeData(ep);
+  ui.unitsSelect.addEventListener('change', () => {
+    const state = playback.getState();
+    onFrame(state.currentFrame);
   });
 
-  // Playback controls
   ui.playPauseBtn.addEventListener('click', () => playback.togglePlay());
   ui.prevFrameBtn.addEventListener('click', () => playback.prevFrame());
   ui.nextFrameBtn.addEventListener('click', () => playback.nextFrame());
 
-  // Timeline scrubber
   ui.timeline.addEventListener('input', () => {
     const frame = parseInt(ui.timeline.value, 10);
     playback.seek(frame);
   });
 
-  // Speed control
   ui.speedSelect.addEventListener('change', () => {
     playback.setSpeed(parseFloat(ui.speedSelect.value));
   });
 
-  // Keyboard shortcuts
   window.addEventListener('keydown', (e) => {
-    // Don't capture keys when typing in input fields
     if (e.target instanceof HTMLInputElement || e.target instanceof HTMLSelectElement) return;
 
     switch (e.code) {
@@ -197,10 +215,9 @@ async function main() {
     }
   });
 
-  // --- 6. Auto-load from URL params ---
-  if (urlDataset) {
-    loadDataset(urlDataset, urlEpisode);
-  }
+  // --- 6. Auto-load ---
+  const repoToLoad = urlDataset || DEFAULT_DATASET;
+  loadDataset(repoToLoad, urlEpisode);
 }
 
 main().catch(console.error);

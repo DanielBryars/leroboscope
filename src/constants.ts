@@ -75,4 +75,4 @@ export const MESH_FILES = [
 ];
 
 /** Default HF dataset for testing */
-export const DEFAULT_DATASET = 'DanielBryars/sim_pick_place_merged_40ep';
+export const DEFAULT_DATASET = 'danbhf/sim_pick_place_2pos_200ep_v2';

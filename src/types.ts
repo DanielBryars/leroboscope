@@ -44,12 +44,21 @@ export interface FrameData {
   timestamp?: number;
 }
 
+/** Video stream info for an episode */
+export interface VideoInfo {
+  key: string;
+  url: string;
+  fromTimestamp: number;
+  toTimestamp: number;
+}
+
 /** Complete loaded episode */
 export interface EpisodeData {
   frames: FrameData[];
   fps: number;
   episodeIndex: number;
   totalFrames: number;
+  videos: VideoInfo[];
 }
 
 /** Playback state */

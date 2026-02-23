@@ -1,10 +1,9 @@
 import { detectVersion, fetchDatasetInfo, fetchParquetFile, formatDataPath } from './hf-client';
-import { readParquetAsObjects, readParquetSlice } from './parquet-reader';
-import type { DatasetInfo, EpisodeMetadata, EpisodeData, FrameData } from '../types';
+import { readParquetAsObjects } from './parquet-reader';
+import type { DatasetInfo, EpisodeMetadata, EpisodeData, FrameData, VideoInfo } from '../types';
 
-/**
- * Full dataset info including version + revision for subsequent fetches.
- */
+const HF_BASE = 'https://huggingface.co';
+
 export interface DatasetContext {
   repoId: string;
   version: string;
@@ -12,18 +11,12 @@ export interface DatasetContext {
   info: DatasetInfo;
 }
 
-/**
- * Load dataset metadata from a HF repo ID.
- */
 export async function loadDatasetContext(repoId: string): Promise<DatasetContext> {
   const { version, revision } = await detectVersion(repoId);
   const info = await fetchDatasetInfo(repoId, revision);
   return { repoId, version, revision, info };
 }
 
-/**
- * Load an episode's frame data from a dataset.
- */
 export async function loadEpisode(
   ctx: DatasetContext,
   episodeIndex: number,
@@ -34,31 +27,23 @@ export async function loadEpisode(
   return loadEpisodeV2(ctx, episodeIndex);
 }
 
-/**
- * V3.0: Load episode metadata parquet, then data parquet slice.
- */
 async function loadEpisodeV3(
   ctx: DatasetContext,
   episodeIndex: number,
 ): Promise<EpisodeData> {
-  // Load episode metadata
   const epMeta = await loadEpisodeMetadata(ctx, episodeIndex);
+  const epMetaRaw = await loadEpisodeMetadataRaw(ctx, episodeIndex);
 
-  // Build data file path
   const chunk = epMeta.data_chunk_index;
   const file = epMeta.data_file_index;
-  const dataPath = `data/chunk-${chunk.toString().padStart(3, '0')}/file-${file.toString().padStart(3, '0')}.parquet`;
+  const dataPath = `data/chunk-${pad3(chunk)}/file-${pad3(file)}.parquet`;
 
   const buffer = await fetchParquetFile(ctx.repoId, ctx.revision, dataPath);
+  const fullData = await readParquetAsObjects(buffer);
 
-  // Read the slice for this episode
   const fromIndex = epMeta.dataset_from_index;
   const toIndex = epMeta.dataset_to_index;
 
-  // First read full data to find file start offset
-  const fullData = await readParquetAsObjects(buffer);
-
-  // Calculate local indices
   let fileStartIndex = 0;
   if (fullData.length > 0 && fullData[0].index !== undefined) {
     fileStartIndex = Number(fullData[0].index);
@@ -67,19 +52,18 @@ async function loadEpisodeV3(
   const localTo = Math.min(fullData.length, toIndex - fileStartIndex);
   const episodeRows = fullData.slice(localFrom, localTo);
 
-  const frames = extractFrames(episodeRows, ctx.info);
+  const frames = extractFrames(episodeRows);
+  const videos = extractVideoInfoV3(ctx, epMetaRaw);
 
   return {
     frames,
     fps: ctx.info.fps,
     episodeIndex,
     totalFrames: frames.length,
+    videos,
   };
 }
 
-/**
- * V2.x: Load per-episode parquet file directly.
- */
 async function loadEpisodeV2(
   ctx: DatasetContext,
   episodeIndex: number,
@@ -93,42 +77,46 @@ async function loadEpisodeV2(
   const buffer = await fetchParquetFile(ctx.repoId, ctx.revision, dataPath);
   const rows = await readParquetAsObjects(buffer);
 
-  const frames = extractFrames(rows, ctx.info);
+  const frames = extractFrames(rows);
+  // v2 video paths use a simpler template
+  const videos = extractVideoInfoV2(ctx, episodeIndex, episodeChunk);
 
   return {
     frames,
     fps: ctx.info.fps,
     episodeIndex,
     totalFrames: frames.length,
+    videos,
   };
 }
 
-/**
- * Load episode metadata for V3.0 datasets.
- */
+// --- Episode metadata ---
+
 async function loadEpisodeMetadata(
   ctx: DatasetContext,
   episodeIndex: number,
 ): Promise<EpisodeMetadata> {
-  // Try chunk-000/file-000 first, iterate files if needed
+  const row = await loadEpisodeMetadataRaw(ctx, episodeIndex);
+  return parseEpisodeMetadata(row);
+}
+
+async function loadEpisodeMetadataRaw(
+  ctx: DatasetContext,
+  episodeIndex: number,
+): Promise<Record<string, unknown>> {
   let fileIdx = 0;
   const chunkIdx = 0;
 
   while (true) {
-    const path = `meta/episodes/chunk-${chunkIdx.toString().padStart(3, '0')}/file-${fileIdx.toString().padStart(3, '0')}.parquet`;
-
+    const path = `meta/episodes/chunk-${pad3(chunkIdx)}/file-${pad3(fileIdx)}.parquet`;
     try {
       const buffer = await fetchParquetFile(ctx.repoId, ctx.revision, path);
       const rows = await readParquetAsObjects(buffer);
 
       for (const row of rows) {
         const epIdx = toNumber(row.episode_index ?? row['0']);
-        if (epIdx === episodeIndex) {
-          return parseEpisodeMetadata(row);
-        }
+        if (epIdx === episodeIndex) return row;
       }
-
-      // Episode not in this file, try next
       fileIdx++;
     } catch {
       throw new Error(`Episode ${episodeIndex} not found in metadata`);
@@ -137,7 +125,6 @@ async function loadEpisodeMetadata(
 }
 
 function parseEpisodeMetadata(row: Record<string, unknown>): EpisodeMetadata {
-  // Handle both named and numeric key formats
   if ('episode_index' in row) {
     return {
       episode_index: toNumber(row.episode_index),
@@ -148,7 +135,6 @@ function parseEpisodeMetadata(row: Record<string, unknown>): EpisodeMetadata {
       length: toNumber(row.length ?? 0),
     };
   }
-  // Numeric key fallback
   return {
     episode_index: toNumber(row['0'] ?? 0),
     data_chunk_index: toNumber(row['1'] ?? 0),
@@ -159,42 +145,84 @@ function parseEpisodeMetadata(row: Record<string, unknown>): EpisodeMetadata {
   };
 }
 
-/**
- * Extract frame data from parquet rows.
- * Looks for observation.state (or action as fallback) in each row.
- */
-function extractFrames(rows: Record<string, unknown>[], info: DatasetInfo): FrameData[] {
-  const frames: FrameData[] = [];
+// --- Video info extraction ---
 
-  // Determine which column has the state data
-  const hasState = 'observation.state' in (info.features || {});
-  const hasAction = 'action' in (info.features || {});
+function extractVideoInfoV3(
+  ctx: DatasetContext,
+  epRow: Record<string, unknown>,
+): VideoInfo[] {
+  const videoFeatures = Object.entries(ctx.info.features).filter(
+    ([, v]) => v.dtype === 'video',
+  );
+
+  return videoFeatures.map(([videoKey]) => {
+    // Look for per-camera metadata: videos/{key}/chunk_index, file_index, from_timestamp, to_timestamp
+    const chunkVal = epRow[`videos/${videoKey}/chunk_index`];
+    const fileVal = epRow[`videos/${videoKey}/file_index`];
+    const fromTs = epRow[`videos/${videoKey}/from_timestamp`];
+    const toTs = epRow[`videos/${videoKey}/to_timestamp`];
+
+    const chunkIndex = chunkVal !== undefined ? toNumber(chunkVal) : 0;
+    const fileIndex = fileVal !== undefined ? toNumber(fileVal) : 0;
+    const fromTimestamp = fromTs !== undefined ? toNumber(fromTs) : 0;
+    const toTimestamp = toTs !== undefined ? toNumber(toTs) : 30;
+
+    const videoPath = `videos/${videoKey}/chunk-${pad3(chunkIndex)}/file-${pad3(fileIndex)}.mp4`;
+    const url = `${HF_BASE}/datasets/${ctx.repoId}/resolve/${ctx.revision}/${videoPath}`;
+
+    return { key: videoKey, url, fromTimestamp, toTimestamp };
+  });
+}
+
+function extractVideoInfoV2(
+  ctx: DatasetContext,
+  episodeIndex: number,
+  episodeChunk: number,
+): VideoInfo[] {
+  if (!ctx.info.video_path) return [];
+
+  const videoFeatures = Object.entries(ctx.info.features).filter(
+    ([, v]) => v.dtype === 'video',
+  );
+
+  return videoFeatures.map(([videoKey]) => {
+    const videoPath = ctx.info.video_path!
+      .replace(/{video_key}/g, videoKey)
+      .replace(/{episode_chunk(?::\d+d)?}/g, pad3(episodeChunk))
+      .replace(/{episode_index(?::\d+d)?}/g, episodeIndex.toString().padStart(6, '0'));
+
+    const url = `${HF_BASE}/datasets/${ctx.repoId}/resolve/${ctx.revision}/${videoPath}`;
+    return { key: videoKey, url, fromTimestamp: 0, toTimestamp: 0 };
+  });
+}
+
+// --- Frame extraction ---
+
+function extractFrames(rows: Record<string, unknown>[]): FrameData[] {
+  const frames: FrameData[] = [];
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     let state: number[] | null = null;
     let action: number[] | undefined;
 
-    // Try observation.state
     const stateVal = row['observation.state'];
     if (Array.isArray(stateVal)) {
       state = stateVal.map(Number);
     }
 
-    // Try action
     const actionVal = row['action'];
     if (Array.isArray(actionVal)) {
       action = actionVal.map(Number);
     }
 
-    // If no observation.state, use action as state
     if (!state && action) {
       state = action;
     }
 
-    // If using v3 with numeric keys, try to find the right array column
+    // Fallback: find first 6-element array
     if (!state) {
-      for (const [key, val] of Object.entries(row)) {
+      for (const [, val] of Object.entries(row)) {
         if (Array.isArray(val) && val.length === 6) {
           state = val.map(Number);
           break;
@@ -215,8 +243,14 @@ function extractFrames(rows: Record<string, unknown>[], info: DatasetInfo): Fram
   return frames;
 }
 
+// --- Helpers ---
+
 function toNumber(val: unknown): number {
   if (typeof val === 'bigint') return Number(val);
   if (typeof val === 'number') return val;
   return Number(val) || 0;
+}
+
+function pad3(n: number): string {
+  return n.toString().padStart(3, '0');
 }
