@@ -1,4 +1,5 @@
 import type { EpisodeData } from '../types';
+import type { UnitMode } from '../replay/joint-mapper';
 import { MOTOR_NAMES } from '../constants';
 
 const COLORS = [
@@ -19,6 +20,8 @@ export class JointChart {
   private episode: EpisodeData | null = null;
   private currentFrame = 0;
   private resizeObserver: ResizeObserver;
+  private unitMode: UnitMode = 'normalized';
+  private dataSource: 'action' | 'state' = 'action';
 
   constructor(container: HTMLElement) {
     this.canvas = document.createElement('canvas');
@@ -59,6 +62,16 @@ export class JointChart {
     this.draw();
   }
 
+  setUnitMode(mode: UnitMode): void {
+    this.unitMode = mode;
+    this.draw();
+  }
+
+  setDataSource(source: 'action' | 'state'): void {
+    this.dataSource = source;
+    this.draw();
+  }
+
   private draw(): void {
     const dpr = devicePixelRatio || 1;
     const rect = this.canvas.parentElement!.getBoundingClientRect();
@@ -85,6 +98,12 @@ export class JointChart {
     const frames = ep.frames;
     const numFrames = frames.length;
 
+    // Helper to get the values array for a frame based on data source selection
+    const getValues = (frame: typeof frames[0]): number[] => {
+      if (this.dataSource === 'action' && frame.action) return frame.action;
+      return frame.state;
+    };
+
     // Layout
     const plotLeft = 50;
     const plotRight = w - 10;
@@ -94,18 +113,26 @@ export class JointChart {
     const plotHeight = plotBottom - plotTop;
 
     // Find Y range across all joints
-    let yMin = Infinity;
-    let yMax = -Infinity;
-    for (const frame of frames) {
-      for (const v of frame.state) {
-        if (v < yMin) yMin = v;
-        if (v > yMax) yMax = v;
+    let yMin: number;
+    let yMax: number;
+    if (this.unitMode === 'normalized') {
+      // Fixed axis for normalized mode
+      yMin = -110;
+      yMax = 110;
+    } else {
+      yMin = Infinity;
+      yMax = -Infinity;
+      for (const frame of frames) {
+        for (const v of getValues(frame)) {
+          if (v < yMin) yMin = v;
+          if (v > yMax) yMax = v;
+        }
       }
+      // Add padding
+      const yPad = (yMax - yMin) * 0.05 || 1;
+      yMin -= yPad;
+      yMax += yPad;
     }
-    // Add padding
-    const yPad = (yMax - yMin) * 0.05 || 1;
-    yMin -= yPad;
-    yMax += yPad;
 
     // Draw grid lines
     ctx.strokeStyle = '#2a2a2a';
@@ -140,7 +167,7 @@ export class JointChart {
     }
 
     // Draw joint lines
-    const numJoints = Math.min(frames[0].state.length, 6);
+    const numJoints = Math.min(getValues(frames[0]).length, 6);
     for (let j = 0; j < numJoints; j++) {
       ctx.strokeStyle = COLORS[j];
       ctx.lineWidth = 1.5;
@@ -148,7 +175,7 @@ export class JointChart {
 
       for (let i = 0; i < numFrames; i++) {
         const x = plotLeft + (i / (numFrames - 1)) * plotWidth;
-        const v = frames[i].state[j];
+        const v = getValues(frames[i])[j];
         const y = plotTop + ((yMax - v) / (yMax - yMin)) * plotHeight;
 
         if (i === 0) ctx.moveTo(x, y);
@@ -179,12 +206,20 @@ export class JointChart {
       ctx.fillText(MOTOR_NAMES[j] ?? `joint_${j}`, lx + 12, ly);
     }
 
-    // Frame number label on X axis
+    // X axis labels: seconds and frames
+    const fps = ep.fps || 30;
+    const totalSec = (numFrames - 1) / fps;
+    const curSec = this.currentFrame / fps;
     ctx.fillStyle = '#666';
     ctx.font = '10px sans-serif';
+    ctx.textAlign = 'left';
+    ctx.fillText('0s / f0', plotLeft, plotBottom + 14);
+    ctx.textAlign = 'right';
+    ctx.fillText(`${totalSec.toFixed(1)}s / f${numFrames - 1}`, plotRight, plotBottom + 14);
+
+    // Playhead time label
+    ctx.fillStyle = '#ccc';
     ctx.textAlign = 'center';
-    ctx.fillText('0', plotLeft, plotBottom + 14);
-    ctx.fillText(String(numFrames - 1), plotRight, plotBottom + 14);
-    ctx.fillText(`frame ${this.currentFrame}`, phX, plotBottom + 14);
+    ctx.fillText(`${curSec.toFixed(2)}s / f${this.currentFrame}`, phX, plotBottom + 14);
   }
 }

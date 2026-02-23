@@ -52,6 +52,12 @@ export interface VideoInfo {
   toTimestamp: number;
 }
 
+/** Scene object placement info */
+export interface SceneObjectInfo {
+  position: { x: number; y: number; z: number };
+  quaternion?: { w: number; x: number; y: number; z: number };
+}
+
 /** Complete loaded episode */
 export interface EpisodeData {
   frames: FrameData[];
@@ -59,6 +65,7 @@ export interface EpisodeData {
   episodeIndex: number;
   totalFrames: number;
   videos: VideoInfo[];
+  sceneObjects?: Record<string, SceneObjectInfo>;
 }
 
 /** Playback state */

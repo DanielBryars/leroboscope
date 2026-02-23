@@ -75,15 +75,31 @@ export function buildScene(
 
     switch (geomType) {
       case GEOM_TYPES.PLANE: {
-        geometry = new THREE.PlaneGeometry(20, 20);
+        // MuJoCo plane faces local Z; PlaneGeometry also faces Z; root rotation handles Z-up -> Y-up
+        geometry = new THREE.PlaneGeometry(10, 10);
+        // Create checker texture matching the MJCF groundplane material
+        const checkerCanvas = document.createElement('canvas');
+        checkerCanvas.width = 512;
+        checkerCanvas.height = 512;
+        const checkerCtx = checkerCanvas.getContext('2d')!;
+        const gridSize = 32;
+        for (let ci = 0; ci < checkerCanvas.width / gridSize; ci++) {
+          for (let cj = 0; cj < checkerCanvas.height / gridSize; cj++) {
+            // rgb1="0.2 0.3 0.4" rgb2="0.1 0.2 0.3"
+            checkerCtx.fillStyle = (ci + cj) % 2 === 0 ? '#334d66' : '#1a334d';
+            checkerCtx.fillRect(ci * gridSize, cj * gridSize, gridSize, gridSize);
+          }
+        }
+        const checkerTex = new THREE.CanvasTexture(checkerCanvas);
+        checkerTex.wrapS = THREE.RepeatWrapping;
+        checkerTex.wrapT = THREE.RepeatWrapping;
+        checkerTex.repeat.set(5, 5);
         const planeMat = new THREE.MeshStandardMaterial({
-          color: 0x2a3a4a,
+          map: checkerTex,
           roughness: 0.8,
           side: THREE.DoubleSide,
         });
         mesh = new THREE.Mesh(geometry, planeMat);
-        // Plane in MuJoCo is XY, in Three.js we need it as XZ
-        mesh.rotation.x = -Math.PI / 2;
         break;
       }
 
@@ -95,12 +111,16 @@ export function buildScene(
       case GEOM_TYPES.CAPSULE: {
         // sx = radius, sy (or sz) = half-length
         geometry = new THREE.CapsuleGeometry(sx, sz * 2, 8, 16);
+        // Three.js capsule is Y-aligned, MuJoCo is Z-aligned
+        geometry.rotateX(Math.PI / 2);
         break;
       }
 
       case GEOM_TYPES.CYLINDER: {
         // sx = radius, sz = half-length
         geometry = new THREE.CylinderGeometry(sx, sx, sz * 2, 24);
+        // Three.js cylinder is Y-aligned, MuJoCo is Z-aligned
+        geometry.rotateX(Math.PI / 2);
         break;
       }
 

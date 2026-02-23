@@ -24,6 +24,7 @@ let mujoco: any;
 let model: any;
 let data: any;
 let qposIndices: number[] = [];
+let freeJointQposAddrs: Map<string, number> = new Map();
 let currentEpisode: EpisodeData | null = null;
 let datasetCtx: DatasetContext | null = null;
 
@@ -63,6 +64,20 @@ async function main() {
   qposIndices = getJointQposIndices(mujoco, model);
   console.log('Joint qpos indices:', qposIndices);
 
+  // Find free joints for scene objects (duplo, etc.)
+  freeJointQposAddrs = new Map();
+  for (let j = 0; j < model.njnt; j++) {
+    if (model.jnt_type[j] === 0) { // mjJNT_FREE = 0
+      try {
+        const name = mujoco.mj_id2name(model, 3, j); // OBJ_JOINT = 3
+        if (name) {
+          freeJointQposAddrs.set(name, model.jnt_qposadr[j]);
+          console.log(`Free joint "${name}" at qpos[${model.jnt_qposadr[j]}]`);
+        }
+      } catch { /* unnamed joint */ }
+    }
+  }
+
   const viewport = document.getElementById('viewport')!;
   const { scene, camera, renderer, controls } = createRenderer(viewport);
   const { bodyGroups, root } = buildScene(mujoco, model, data);
@@ -86,11 +101,22 @@ async function main() {
     return ui.unitsSelect.value as UnitMode;
   }
 
+  function getDataSource(): 'action' | 'state' {
+    return ui.dataSourceSelect.value as 'action' | 'state';
+  }
+
+  function getFrameValues(frame: import('./types').FrameData): number[] {
+    const src = getDataSource();
+    if (src === 'action' && frame.action) return frame.action;
+    return frame.state;
+  }
+
   function onFrame(frameIdx: number) {
     if (!currentEpisode || frameIdx >= currentEpisode.frames.length) return;
 
     const frame = currentEpisode.frames[frameIdx];
-    const radians = convertToRadians(frame.state, getUnitMode());
+    const values = getFrameValues(frame);
+    const radians = convertToRadians(values, getUnitMode());
     setJointPositions(data, qposIndices, radians);
 
     mujoco.mj_forward(model, data);
@@ -110,12 +136,39 @@ async function main() {
 
   // --- 5. Wire UI Events ---
 
+  function applySceneObjects(episode: EpisodeData) {
+    if (!episode.sceneObjects) return;
+    for (const [objName, info] of Object.entries(episode.sceneObjects)) {
+      // Map object names to joint names (e.g., "duplo" -> "duplo_joint")
+      const jointName = `${objName}_joint`;
+      const qposAddr = freeJointQposAddrs.get(jointName);
+      if (qposAddr === undefined) continue;
+
+      // Freejoint qpos: [x, y, z, qw, qx, qy, qz]
+      data.qpos[qposAddr + 0] = info.position.x;
+      data.qpos[qposAddr + 1] = info.position.y;
+      data.qpos[qposAddr + 2] = info.position.z;
+      if (info.quaternion) {
+        data.qpos[qposAddr + 3] = info.quaternion.w;
+        data.qpos[qposAddr + 4] = info.quaternion.x;
+        data.qpos[qposAddr + 5] = info.quaternion.y;
+        data.qpos[qposAddr + 6] = info.quaternion.z;
+      }
+      console.log(`Set ${objName} position: [${info.position.x}, ${info.position.y}, ${info.position.z}]`);
+    }
+    mujoco.mj_forward(model, data);
+    updateBodyTransforms(model, data, bodyGroups);
+  }
+
   async function loadEpisodeData(episodeIdx: number) {
     if (!datasetCtx) return;
     showLoading(`Loading episode ${episodeIdx}...`);
 
     try {
       currentEpisode = await loadEpisode(datasetCtx, episodeIdx);
+
+      // Apply scene object positions (block, bowl, etc.) before playback
+      applySceneObjects(currentEpisode);
 
       // Log first frame for debugging
       if (currentEpisode.frames.length > 0) {
@@ -170,7 +223,14 @@ async function main() {
     }
   });
 
+  ui.dataSourceSelect.addEventListener('change', () => {
+    chart.setDataSource(getDataSource());
+    const state = playback.getState();
+    onFrame(state.currentFrame);
+  });
+
   ui.unitsSelect.addEventListener('change', () => {
+    chart.setUnitMode(getUnitMode());
     const state = playback.getState();
     onFrame(state.currentFrame);
   });

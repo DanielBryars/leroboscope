@@ -1,6 +1,6 @@
 import { detectVersion, fetchDatasetInfo, fetchParquetFile, formatDataPath } from './hf-client';
 import { readParquetAsObjects } from './parquet-reader';
-import type { DatasetInfo, EpisodeMetadata, EpisodeData, FrameData, VideoInfo } from '../types';
+import type { DatasetInfo, EpisodeMetadata, EpisodeData, FrameData, VideoInfo, SceneObjectInfo } from '../types';
 
 const HF_BASE = 'https://huggingface.co';
 
@@ -9,12 +9,42 @@ export interface DatasetContext {
   version: string;
   revision: string;
   info: DatasetInfo;
+  episodeScenes: Record<string, Record<string, SceneObjectInfo>> | null;
 }
 
 export async function loadDatasetContext(repoId: string): Promise<DatasetContext> {
   const { version, revision } = await detectVersion(repoId);
   const info = await fetchDatasetInfo(repoId, revision);
-  return { repoId, version, revision, info };
+  const episodeScenes = await fetchEpisodeScenes(repoId, revision);
+  return { repoId, version, revision, info, episodeScenes };
+}
+
+/**
+ * Try to fetch meta/episode_scenes.json (contains object positions per episode).
+ */
+async function fetchEpisodeScenes(
+  repoId: string,
+  revision: string,
+): Promise<Record<string, Record<string, SceneObjectInfo>> | null> {
+  try {
+    const url = `${HF_BASE}/datasets/${repoId}/resolve/${revision}/meta/episode_scenes.json`;
+    const res = await fetch(url);
+    if (!res.ok) return null;
+    const raw = await res.json();
+    // Convert: { "0": { "objects": { "duplo": { position: ..., quaternion: ... } } } }
+    const result: Record<string, Record<string, SceneObjectInfo>> = {};
+    for (const [epIdx, epData] of Object.entries(raw)) {
+      const objects = (epData as any)?.objects;
+      if (objects) {
+        result[epIdx] = objects;
+      }
+    }
+    console.log(`[episode_scenes] Loaded scene info for ${Object.keys(result).length} episodes`);
+    return result;
+  } catch {
+    console.log('[episode_scenes] No episode_scenes.json found (optional)');
+    return null;
+  }
 }
 
 export async function loadEpisode(
@@ -54,6 +84,7 @@ async function loadEpisodeV3(
 
   const frames = extractFrames(episodeRows);
   const videos = extractVideoInfoV3(ctx, epMetaRaw);
+  const sceneObjects = ctx.episodeScenes?.[episodeIndex.toString()] ?? undefined;
 
   return {
     frames,
@@ -61,6 +92,7 @@ async function loadEpisodeV3(
     episodeIndex,
     totalFrames: frames.length,
     videos,
+    sceneObjects,
   };
 }
 
@@ -80,6 +112,7 @@ async function loadEpisodeV2(
   const frames = extractFrames(rows);
   // v2 video paths use a simpler template
   const videos = extractVideoInfoV2(ctx, episodeIndex, episodeChunk);
+  const sceneObjects = ctx.episodeScenes?.[episodeIndex.toString()] ?? undefined;
 
   return {
     frames,
@@ -87,6 +120,7 @@ async function loadEpisodeV2(
     episodeIndex,
     totalFrames: frames.length,
     videos,
+    sceneObjects,
   };
 }
 
@@ -198,33 +232,85 @@ function extractVideoInfoV2(
 
 // --- Frame extraction ---
 
+/**
+ * Try to extract a flat number[] from a parquet value that might be:
+ * - A plain JS array: [1.0, 2.0, ...]
+ * - A typed array: Float32Array, Float64Array, etc.
+ * - A nested Parquet list: [{list: [{element: v}]}, ...] or [[v], [v], ...]
+ */
+function toNumberArray(val: unknown): number[] | null {
+  if (val == null) return null;
+
+  // Plain JS array
+  if (Array.isArray(val)) {
+    if (val.length === 0) return null;
+    // Check if first element is a number (flat array)
+    if (typeof val[0] === 'number' || typeof val[0] === 'bigint') {
+      return val.map(Number);
+    }
+    // Nested: [[v], [v], ...] or [{element: v}, ...]
+    if (Array.isArray(val[0])) {
+      return val.map((sub: unknown) => Number((sub as unknown[])[0]));
+    }
+    if (typeof val[0] === 'object' && val[0] !== null) {
+      const obj = val[0] as Record<string, unknown>;
+      const key = Object.keys(obj)[0];
+      if (key) return val.map((sub: unknown) => Number((sub as Record<string, unknown>)[key]));
+    }
+    return val.map(Number);
+  }
+
+  // Typed arrays (Float32Array, Float64Array, etc.)
+  if (ArrayBuffer.isView(val) && 'length' in val) {
+    return Array.from(val as Float32Array);
+  }
+
+  return null;
+}
+
 function extractFrames(rows: Record<string, unknown>[]): FrameData[] {
   const frames: FrameData[] = [];
+
+  // Log first row structure for debugging
+  if (rows.length > 0) {
+    const row0 = rows[0];
+    const keys = Object.keys(row0);
+    console.log(`[extractFrames] ${rows.length} rows, columns (${keys.length}):`, keys);
+    for (const key of keys) {
+      const val = row0[key];
+      let preview: string;
+      if (Array.isArray(val) || ArrayBuffer.isView(val)) {
+        const arr = Array.isArray(val) ? val : Array.from(val as Float32Array);
+        preview = `[${arr.slice(0, 3).map(Number).join(', ')}...] (len=${arr.length})`;
+      } else if (typeof val === 'bigint') {
+        preview = `${val}n`;
+      } else {
+        preview = String(val);
+      }
+      console.log(`  "${key}": ${preview}`);
+    }
+  }
 
   for (let i = 0; i < rows.length; i++) {
     const row = rows[i];
     let state: number[] | null = null;
     let action: number[] | undefined;
 
-    const stateVal = row['observation.state'];
-    if (Array.isArray(stateVal)) {
-      state = stateVal.map(Number);
-    }
-
-    const actionVal = row['action'];
-    if (Array.isArray(actionVal)) {
-      action = actionVal.map(Number);
-    }
+    state = toNumberArray(row['observation.state']);
+    const actionArr = toNumberArray(row['action']);
+    if (actionArr) action = actionArr;
 
     if (!state && action) {
       state = action;
     }
 
-    // Fallback: find first 6-element array
+    // Fallback: find first array-like value with expected joint count
     if (!state) {
-      for (const [, val] of Object.entries(row)) {
-        if (Array.isArray(val) && val.length === 6) {
-          state = val.map(Number);
+      for (const [key, val] of Object.entries(row)) {
+        const arr = toNumberArray(val);
+        if (arr && arr.length >= 4 && arr.length <= 12) {
+          console.log(`[extractFrames] Fallback: using column "${key}" (${arr.length} elements)`);
+          state = arr;
           break;
         }
       }
@@ -238,6 +324,11 @@ function extractFrames(rows: Record<string, unknown>[]): FrameData[] {
         timestamp: row.timestamp !== undefined ? Number(row.timestamp) : undefined,
       });
     }
+  }
+
+  if (frames.length > 0) {
+    console.log('[extractFrames] Frame 0 state:', frames[0].state);
+    console.log('[extractFrames] Frame 0 action:', frames[0].action);
   }
 
   return frames;

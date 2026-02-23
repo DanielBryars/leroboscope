@@ -11,6 +11,7 @@ export interface UIElements {
   timeline: HTMLInputElement;
   frameInfo: HTMLSpanElement;
   speedSelect: HTMLSelectElement;
+  dataSourceSelect: HTMLSelectElement;
   unitsSelect: HTMLSelectElement;
   datasetMeta: HTMLSpanElement;
 }
@@ -26,6 +27,7 @@ export function getUIElements(): UIElements {
     timeline: document.getElementById('timeline') as HTMLInputElement,
     frameInfo: document.getElementById('frame-info') as HTMLSpanElement,
     speedSelect: document.getElementById('speed-select') as HTMLSelectElement,
+    dataSourceSelect: document.getElementById('data-source-select') as HTMLSelectElement,
     unitsSelect: document.getElementById('units-select') as HTMLSelectElement,
     datasetMeta: document.getElementById('dataset-meta') as HTMLSpanElement,
   };
