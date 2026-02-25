@@ -54,8 +54,19 @@ export const OBJ_TYPES = {
   ACTUATOR: 18,
 } as const;
 
-/** MJCF scene file path */
-export const SCENE_XML = '/scenes/so101_scene.xml';
+/** Available scenes */
+export const SCENES: { file: string; label: string }[] = [
+  { file: 'so101_with_wrist_cam.xml', label: 'Wrist Cam (default)' },
+  { file: 'so101_rgbd.xml', label: 'RGBD Camera' },
+  { file: 'so101_dark_ground.xml', label: 'Dark Ground' },
+  { file: 'so101_with_confuser.xml', label: 'With Confuser' },
+  { file: 'so101_two_blocks.xml', label: 'Two Blocks (W+R)' },
+  { file: 'so101_two_white_blocks.xml', label: 'Two White Blocks' },
+  { file: 'so101_two_red_blocks.xml', label: 'Two Red Blocks' },
+];
+
+/** Default scene file */
+export const DEFAULT_SCENE = SCENES[0].file;
 
 /** STL mesh files needed by the scene */
 export const MESH_FILES = [

@@ -2,6 +2,7 @@ import type { PlaybackState } from '../types';
 
 /** All the UI elements we need */
 export interface UIElements {
+  sceneSelect: HTMLSelectElement;
   datasetInput: HTMLInputElement;
   episodeList: HTMLElement;
   loadBtn: HTMLButtonElement;
@@ -18,6 +19,7 @@ export interface UIElements {
 
 export function getUIElements(): UIElements {
   return {
+    sceneSelect: document.getElementById('scene-select') as HTMLSelectElement,
     datasetInput: document.getElementById('dataset-id') as HTMLInputElement,
     episodeList: document.getElementById('episode-list') as HTMLElement,
     loadBtn: document.getElementById('load-btn') as HTMLButtonElement,

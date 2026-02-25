@@ -235,6 +235,7 @@
     <header>
       <h1>Leroboscope</h1>
       <div class="dataset-input">
+        <select id="scene-select" title="MuJoCo scene"></select>
         <input id="dataset-id" type="text" placeholder="HF dataset ID (e.g. danbhf/sim_pick_place_2pos_200ep_v2)" />
         <button id="load-btn" disabled>Load</button>
       </div>
@@ -293,6 +294,9 @@
           <option value="degrees">Degrees (grip 0-100)</option>
           <option value="radians">Radians</option>
         </select>
+      </div>
+      <div class="ctrl-group">
+        <label><input id="fov-toggle" type="checkbox" checked /> FOV</label>
       </div>
     </div>
   </div>

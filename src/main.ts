@@ -16,7 +16,8 @@ import {
 import { showLoading, showError, hideStatus } from './ui/status';
 import { JointChart } from './ui/chart';
 import { CameraPanel } from './ui/cameras';
-import { DEFAULT_DATASET } from './constants';
+import { DEFAULT_DATASET, DEFAULT_SCENE, SCENES } from './constants';
+import { FovOverlay } from './mujoco/fov-overlay';
 import type { EpisodeData } from './types';
 
 // --- Global State ---
@@ -27,6 +28,9 @@ let qposIndices: number[] = [];
 let freeJointQposAddrs: Map<string, number> = new Map();
 let currentEpisode: EpisodeData | null = null;
 let datasetCtx: DatasetContext | null = null;
+let bodyGroups: Map<number, import('three').Group> = new Map();
+let sceneRoot: import('three').Group | null = null;
+let fovOverlay: FovOverlay | null = null;
 
 const playback = new PlaybackController();
 
@@ -38,6 +42,15 @@ async function main() {
     ui.datasetInput.value = DEFAULT_DATASET;
   }
 
+  // Populate scene dropdown
+  for (const s of SCENES) {
+    const opt = document.createElement('option');
+    opt.value = s.file;
+    opt.textContent = s.label;
+    ui.sceneSelect.appendChild(opt);
+  }
+  ui.sceneSelect.value = DEFAULT_SCENE;
+
   // --- Init chart + cameras ---
   const chart = new JointChart(document.getElementById('chart-panel')!);
   const cameras = new CameraPanel(document.getElementById('camera-container')!);
@@ -45,50 +58,81 @@ async function main() {
   // Chart click-to-seek
   chart.onSeek = (frame) => playback.seek(frame);
 
-  // --- 1. Initialize MuJoCo + Three.js ---
-  showLoading('Initializing MuJoCo WASM...');
-
-  try {
-    const result = await initMuJoCo();
-    mujoco = result.mujoco;
-    model = result.model;
-    data = result.data;
-  } catch (err) {
-    showError(`Failed to initialize MuJoCo: ${err}`);
-    console.error(err);
-    return;
-  }
-
-  showLoading('Building 3D scene...');
-
-  qposIndices = getJointQposIndices(mujoco, model);
-  console.log('Joint qpos indices:', qposIndices);
-
-  // Find free joints for scene objects (duplo, etc.)
-  freeJointQposAddrs = new Map();
-  for (let j = 0; j < model.njnt; j++) {
-    if (model.jnt_type[j] === 0) { // mjJNT_FREE = 0
-      try {
-        const name = mujoco.mj_id2name(model, 3, j); // OBJ_JOINT = 3
-        if (name) {
-          freeJointQposAddrs.set(name, model.jnt_qposadr[j]);
-          console.log(`Free joint "${name}" at qpos[${model.jnt_qposadr[j]}]`);
-        }
-      } catch { /* unnamed joint */ }
-    }
-  }
-
+  // --- 1. Initialize Three.js (once) ---
   const viewport = document.getElementById('viewport')!;
   const { scene, camera, renderer, controls } = createRenderer(viewport);
-  const { bodyGroups, root } = buildScene(mujoco, model, data);
-  scene.add(root);
 
-  updateBodyTransforms(model, data, bodyGroups);
+  // --- 2. Load MuJoCo scene (can be called again on scene switch) ---
+  async function loadScene(sceneFile: string) {
+    showLoading('Initializing MuJoCo WASM...');
 
-  hideStatus();
-  ui.loadBtn.disabled = false;
+    try {
+      const result = await initMuJoCo(sceneFile);
+      mujoco = result.mujoco;
+      model = result.model;
+      data = result.data;
+    } catch (err) {
+      showError(`Failed to initialize MuJoCo: ${err}`);
+      console.error(err);
+      return;
+    }
 
-  // --- 2. Render Loop ---
+    showLoading('Building 3D scene...');
+
+    qposIndices = getJointQposIndices(mujoco, model);
+    console.log('Joint qpos indices:', qposIndices);
+
+    // Find free joints for scene objects (duplo, etc.)
+    freeJointQposAddrs = new Map();
+    for (let j = 0; j < model.njnt; j++) {
+      if (model.jnt_type[j] === 0) { // mjJNT_FREE = 0
+        try {
+          const name = mujoco.mj_id2name(model, 3, j); // OBJ_JOINT = 3
+          if (name) {
+            freeJointQposAddrs.set(name, model.jnt_qposadr[j]);
+            console.log(`Free joint "${name}" at qpos[${model.jnt_qposadr[j]}]`);
+          }
+        } catch { /* unnamed joint */ }
+      }
+    }
+
+    // Remove old scene root if switching scenes
+    if (sceneRoot) {
+      scene.remove(sceneRoot);
+      sceneRoot.traverse((obj) => {
+        if ((obj as any).geometry) (obj as any).geometry.dispose();
+        if ((obj as any).material) {
+          const mat = (obj as any).material;
+          if (Array.isArray(mat)) mat.forEach((m: any) => m.dispose());
+          else mat.dispose();
+        }
+      });
+    }
+
+    // Remove old FOV overlay
+    if (fovOverlay) {
+      fovOverlay.dispose();
+      fovOverlay = null;
+    }
+
+    const built = buildScene(mujoco, model, data);
+    bodyGroups = built.bodyGroups;
+    sceneRoot = built.root;
+    scene.add(sceneRoot);
+
+    // Create FOV overlay
+    fovOverlay = new FovOverlay(mujoco, model, data, sceneRoot);
+
+    updateBodyTransforms(model, data, bodyGroups);
+    fovOverlay.update();
+
+    hideStatus();
+    ui.loadBtn.disabled = false;
+  }
+
+  await loadScene(DEFAULT_SCENE);
+
+  // --- 3. Render Loop ---
   function renderLoop() {
     controls.update();
     renderer.render(scene, camera);
@@ -96,7 +140,7 @@ async function main() {
   }
   renderLoop();
 
-  // --- 3. Frame Update Callback ---
+  // --- 4. Frame Update Callback ---
   function getUnitMode(): UnitMode {
     return ui.unitsSelect.value as UnitMode;
   }
@@ -122,6 +166,9 @@ async function main() {
     mujoco.mj_forward(model, data);
     updateBodyTransforms(model, data, bodyGroups);
 
+    // Update FOV overlay (wrist cam moves with arm)
+    if (fovOverlay) fovOverlay.update();
+
     // Update chart playhead
     chart.setFrame(frameIdx);
 
@@ -129,22 +176,20 @@ async function main() {
     cameras.seekToFrame(frameIdx);
   }
 
-  // --- 4. Playback Callbacks ---
+  // --- 5. Playback Callbacks ---
   playback.setCallbacks(onFrame, (state) => {
     updatePlaybackUI(ui, state);
   });
 
-  // --- 5. Wire UI Events ---
+  // --- 6. Wire UI Events ---
 
   function applySceneObjects(episode: EpisodeData) {
     if (!episode.sceneObjects) return;
     for (const [objName, info] of Object.entries(episode.sceneObjects)) {
-      // Map object names to joint names (e.g., "duplo" -> "duplo_joint")
       const jointName = `${objName}_joint`;
       const qposAddr = freeJointQposAddrs.get(jointName);
       if (qposAddr === undefined) continue;
 
-      // Freejoint qpos: [x, y, z, qw, qx, qy, qz]
       data.qpos[qposAddr + 0] = info.position.x;
       data.qpos[qposAddr + 1] = info.position.y;
       data.qpos[qposAddr + 2] = info.position.z;
@@ -158,6 +203,7 @@ async function main() {
     }
     mujoco.mj_forward(model, data);
     updateBodyTransforms(model, data, bodyGroups);
+    if (fovOverlay) fovOverlay.update();
   }
 
   async function loadEpisodeData(episodeIdx: number) {
@@ -210,6 +256,21 @@ async function main() {
       ui.loadBtn.disabled = false;
     }
   }
+
+  const fovToggle = document.getElementById('fov-toggle') as HTMLInputElement;
+  fovToggle.addEventListener('change', () => {
+    if (fovOverlay) fovOverlay.setVisible(fovToggle.checked);
+  });
+
+  ui.sceneSelect.addEventListener('change', async () => {
+    playback.pause();
+    await loadScene(ui.sceneSelect.value);
+    // Re-apply current episode data if loaded
+    if (currentEpisode) {
+      applySceneObjects(currentEpisode);
+      onFrame(playback.getState().currentFrame);
+    }
+  });
 
   ui.loadBtn.addEventListener('click', () => {
     const repoId = ui.datasetInput.value.trim();
@@ -275,7 +336,7 @@ async function main() {
     }
   });
 
-  // --- 6. Auto-load ---
+  // --- 7. Auto-load ---
   const repoToLoad = urlDataset || DEFAULT_DATASET;
   loadDataset(repoToLoad, urlEpisode);
 }
