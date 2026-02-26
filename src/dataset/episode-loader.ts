@@ -1,6 +1,6 @@
 import { detectVersion, fetchDatasetInfo, fetchParquetFile, formatDataPath } from './hf-client';
 import { readParquetAsObjects } from './parquet-reader';
-import type { DatasetInfo, EpisodeMetadata, EpisodeData, FrameData, VideoInfo, SceneObjectInfo } from '../types';
+import type { DatasetInfo, EpisodeMetadata, EpisodeData, FrameData, VideoInfo, EpisodeSceneEntry } from '../types';
 
 const HF_BASE = 'https://huggingface.co';
 
@@ -9,7 +9,7 @@ export interface DatasetContext {
   version: string;
   revision: string;
   info: DatasetInfo;
-  episodeScenes: Record<string, Record<string, SceneObjectInfo>> | null;
+  episodeScenes: Record<string, EpisodeSceneEntry> | null;
 }
 
 export async function loadDatasetContext(repoId: string): Promise<DatasetContext> {
@@ -20,26 +20,40 @@ export async function loadDatasetContext(repoId: string): Promise<DatasetContext
 }
 
 /**
- * Try to fetch meta/episode_scenes.json (contains object positions per episode).
+ * Extract just the filename from a scene_xml path (which may be an absolute local path).
+ * e.g. "E:\git\ai\lerobot-thesis\scenes\so101_two_white_blocks.xml" → "so101_two_white_blocks.xml"
+ */
+function sceneXmlBasename(path: string): string {
+  // Handle both forward and backslashes
+  const parts = path.replace(/\\/g, '/').split('/');
+  return parts[parts.length - 1];
+}
+
+/**
+ * Try to fetch meta/episode_scenes.json (contains scene_xml + object positions per episode).
  */
 async function fetchEpisodeScenes(
   repoId: string,
   revision: string,
-): Promise<Record<string, Record<string, SceneObjectInfo>> | null> {
+): Promise<Record<string, EpisodeSceneEntry> | null> {
   try {
     const url = `${HF_BASE}/datasets/${repoId}/resolve/${revision}/meta/episode_scenes.json`;
     const res = await fetch(url);
     if (!res.ok) return null;
     const raw = await res.json();
-    // Convert: { "0": { "objects": { "duplo": { position: ..., quaternion: ... } } } }
-    const result: Record<string, Record<string, SceneObjectInfo>> = {};
+    // Format: { "0": { "scene_xml": "path/to/scene.xml", "objects": { "duplo": { position: ..., quaternion: ... } } } }
+    const result: Record<string, EpisodeSceneEntry> = {};
     for (const [epIdx, epData] of Object.entries(raw)) {
-      const objects = (epData as any)?.objects;
-      if (objects) {
-        result[epIdx] = objects;
-      }
+      const entry = epData as any;
+      const objects = entry?.objects ?? {};
+      const sceneXmlRaw = entry?.scene_xml;
+      result[epIdx] = {
+        objects,
+        sceneXml: sceneXmlRaw ? sceneXmlBasename(sceneXmlRaw) : undefined,
+      };
     }
-    console.log(`[episode_scenes] Loaded scene info for ${Object.keys(result).length} episodes`);
+    const withScene = Object.values(result).filter(e => e.sceneXml).length;
+    console.log(`[episode_scenes] Loaded scene info for ${Object.keys(result).length} episodes (${withScene} with scene_xml)`);
     return result;
   } catch {
     console.log('[episode_scenes] No episode_scenes.json found (optional)');
@@ -84,7 +98,8 @@ async function loadEpisodeV3(
 
   const frames = extractFrames(episodeRows);
   const videos = extractVideoInfoV3(ctx, epMetaRaw);
-  const sceneObjects = ctx.episodeScenes?.[episodeIndex.toString()] ?? undefined;
+  const sceneEntry = ctx.episodeScenes?.[episodeIndex.toString()];
+  const sceneObjects = sceneEntry?.objects;
 
   return {
     frames,
@@ -92,7 +107,8 @@ async function loadEpisodeV3(
     episodeIndex,
     totalFrames: frames.length,
     videos,
-    sceneObjects,
+    sceneObjects: sceneObjects && Object.keys(sceneObjects).length > 0 ? sceneObjects : undefined,
+    sceneXml: sceneEntry?.sceneXml,
   };
 }
 
@@ -112,7 +128,8 @@ async function loadEpisodeV2(
   const frames = extractFrames(rows);
   // v2 video paths use a simpler template
   const videos = extractVideoInfoV2(ctx, episodeIndex, episodeChunk);
-  const sceneObjects = ctx.episodeScenes?.[episodeIndex.toString()] ?? undefined;
+  const sceneEntry = ctx.episodeScenes?.[episodeIndex.toString()];
+  const sceneObjects = sceneEntry?.objects;
 
   return {
     frames,
@@ -120,7 +137,8 @@ async function loadEpisodeV2(
     episodeIndex,
     totalFrames: frames.length,
     videos,
-    sceneObjects,
+    sceneObjects: sceneObjects && Object.keys(sceneObjects).length > 0 ? sceneObjects : undefined,
+    sceneXml: sceneEntry?.sceneXml,
   };
 }
 

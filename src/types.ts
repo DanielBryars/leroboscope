@@ -58,6 +58,12 @@ export interface SceneObjectInfo {
   quaternion?: { w: number; x: number; y: number; z: number };
 }
 
+/** Per-episode scene entry from episode_scenes.json */
+export interface EpisodeSceneEntry {
+  sceneXml?: string;
+  objects: Record<string, SceneObjectInfo>;
+}
+
 /** Complete loaded episode */
 export interface EpisodeData {
   frames: FrameData[];
@@ -66,6 +72,8 @@ export interface EpisodeData {
   totalFrames: number;
   videos: VideoInfo[];
   sceneObjects?: Record<string, SceneObjectInfo>;
+  /** Scene XML filename extracted from episode_scenes.json (just the basename, e.g. "so101_two_white_blocks.xml") */
+  sceneXml?: string;
 }
 
 /** Playback state */

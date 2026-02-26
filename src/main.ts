@@ -17,6 +17,9 @@ import { showLoading, showError, hideStatus } from './ui/status';
 import { JointChart } from './ui/chart';
 import { CameraPanel } from './ui/cameras';
 import { DEFAULT_DATASET, DEFAULT_SCENE, SCENES } from './constants';
+
+/** Currently loaded scene filename (e.g. "so101_with_wrist_cam.xml") */
+let currentSceneFile = DEFAULT_SCENE;
 import { FovOverlay } from './mujoco/fov-overlay';
 import type { EpisodeData } from './types';
 
@@ -71,6 +74,7 @@ async function main() {
       mujoco = result.mujoco;
       model = result.model;
       data = result.data;
+      currentSceneFile = sceneFile;
     } catch (err) {
       showError(`Failed to initialize MuJoCo: ${err}`);
       console.error(err);
@@ -212,6 +216,20 @@ async function main() {
 
     try {
       currentEpisode = await loadEpisode(datasetCtx, episodeIdx);
+
+      // Auto-switch scene if episode specifies a different scene_xml
+      if (currentEpisode.sceneXml && currentEpisode.sceneXml !== currentSceneFile) {
+        // Check if the scene file is one of our known scenes
+        const knownScene = SCENES.find(s => s.file === currentEpisode!.sceneXml);
+        if (knownScene) {
+          console.log(`[auto-scene] Switching to "${knownScene.label}" (${knownScene.file}) for episode ${episodeIdx}`);
+          playback.pause();
+          await loadScene(knownScene.file);
+          ui.sceneSelect.value = knownScene.file;
+        } else {
+          console.warn(`[auto-scene] Episode ${episodeIdx} requires unknown scene "${currentEpisode.sceneXml}", keeping current scene`);
+        }
+      }
 
       // Apply scene object positions (block, bowl, etc.) before playback
       applySceneObjects(currentEpisode);
