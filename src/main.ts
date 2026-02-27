@@ -9,6 +9,7 @@ import {
   populateEpisodes,
   selectEpisodeInList,
   updatePlaybackUI,
+  updateRepeatButton,
   setDatasetMeta,
   applyUrlParams,
   updateUrlParams,
@@ -37,9 +38,41 @@ let fovOverlay: FovOverlay | null = null;
 
 const playback = new PlaybackController();
 
+/** Track the current episode index for repeat-all auto-advance */
+let currentEpisodeIndex = 0;
+
 async function main() {
   const ui = getUIElements();
   const { dataset: urlDataset, episode: urlEpisode } = applyUrlParams(ui);
+
+  // --- Landing page elements ---
+  const landingPage = document.getElementById('landing-page')!;
+  const landingLoading = document.getElementById('landing-loading')!;
+  const landingEnter = document.getElementById('landing-enter') as HTMLButtonElement;
+  const aboutBtn = document.getElementById('about-btn') as HTMLButtonElement;
+  const hasDatasetParam = !!urlDataset;
+
+  function showLandingReady() {
+    landingLoading.style.display = 'none';
+    landingEnter.style.display = 'inline-block';
+  }
+
+  function dismissLanding() {
+    landingPage.classList.add('hidden');
+    setTimeout(() => landingPage.classList.add('removed'), 500);
+  }
+
+  function showLanding() {
+    landingPage.classList.remove('removed');
+    // Force reflow so transition works
+    void landingPage.offsetHeight;
+    landingPage.classList.remove('hidden');
+    landingLoading.style.display = 'none';
+    landingEnter.style.display = 'inline-block';
+  }
+
+  landingEnter.addEventListener('click', dismissLanding);
+  aboutBtn.addEventListener('click', showLanding);
 
   if (!urlDataset) {
     ui.datasetInput.value = DEFAULT_DATASET;
@@ -185,6 +218,21 @@ async function main() {
     updatePlaybackUI(ui, state);
   });
 
+  // Repeat button
+  updateRepeatButton(ui, playback.getState().repeatMode);
+  ui.repeatBtn.addEventListener('click', () => {
+    playback.cycleRepeatMode();
+    updateRepeatButton(ui, playback.getState().repeatMode);
+  });
+
+  // Auto-advance to next episode on repeat-all
+  playback.setOnEpisodeEnd(() => {
+    if (!datasetCtx) return;
+    const total = datasetCtx.info.total_episodes;
+    const nextIdx = (currentEpisodeIndex + 1) % total;
+    loadEpisodeData(nextIdx).then(() => playback.play());
+  });
+
   // --- 6. Wire UI Events ---
 
   function applySceneObjects(episode: EpisodeData) {
@@ -242,6 +290,7 @@ async function main() {
         console.log('  Frame 0 action:', f0.action);
       }
 
+      currentEpisodeIndex = episodeIdx;
       playback.loadEpisode(currentEpisode);
       chart.loadEpisode(currentEpisode);
       cameras.loadVideos(currentEpisode.videos, currentEpisode.fps, currentEpisode.totalFrames);
@@ -356,7 +405,15 @@ async function main() {
 
   // --- 7. Auto-load ---
   const repoToLoad = urlDataset || DEFAULT_DATASET;
-  loadDataset(repoToLoad, urlEpisode);
+  await loadDataset(repoToLoad, urlEpisode);
+
+  // Landing page: ready to enter
+  if (hasDatasetParam) {
+    // Auto-dismiss when loaded via URL param
+    dismissLanding();
+  } else {
+    showLandingReady();
+  }
 }
 
 main().catch(console.error);

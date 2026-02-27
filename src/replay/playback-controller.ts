@@ -1,4 +1,4 @@
-import type { EpisodeData, PlaybackState } from '../types';
+import type { EpisodeData, PlaybackState, RepeatMode } from '../types';
 
 export type PlaybackCallback = (frame: number) => void;
 
@@ -12,6 +12,7 @@ export class PlaybackController {
     totalFrames: 0,
     speed: 1,
     fps: 30,
+    repeatMode: 'repeat-one',
   };
 
   private lastTimestamp = 0;
@@ -19,6 +20,7 @@ export class PlaybackController {
   private animFrameId = 0;
   private onFrame: PlaybackCallback | null = null;
   private onStateChange: ((state: PlaybackState) => void) | null = null;
+  private onEpisodeEnd: (() => void) | null = null;
 
   setCallbacks(
     onFrame: PlaybackCallback,
@@ -26,6 +28,22 @@ export class PlaybackController {
   ): void {
     this.onFrame = onFrame;
     this.onStateChange = onStateChange;
+  }
+
+  setOnEpisodeEnd(cb: () => void): void {
+    this.onEpisodeEnd = cb;
+  }
+
+  setRepeatMode(mode: RepeatMode): void {
+    this.state.repeatMode = mode;
+    this.notify();
+  }
+
+  cycleRepeatMode(): void {
+    const order: RepeatMode[] = ['off', 'repeat-all', 'repeat-one'];
+    const idx = order.indexOf(this.state.repeatMode);
+    this.state.repeatMode = order[(idx + 1) % order.length];
+    this.notify();
   }
 
   loadEpisode(episode: EpisodeData): void {
@@ -111,8 +129,24 @@ export class PlaybackController {
       advanced = true;
 
       if (this.state.currentFrame >= this.state.totalFrames) {
-        // Loop back to start
-        this.state.currentFrame = 0;
+        switch (this.state.repeatMode) {
+          case 'repeat-one':
+            this.state.currentFrame = 0;
+            break;
+          case 'repeat-all':
+            this.state.currentFrame = this.state.totalFrames - 1;
+            this.pause();
+            this.onFrame?.(this.state.currentFrame);
+            this.notify();
+            this.onEpisodeEnd?.();
+            return;
+          case 'off':
+            this.state.currentFrame = this.state.totalFrames - 1;
+            this.pause();
+            this.onFrame?.(this.state.currentFrame);
+            this.notify();
+            return;
+        }
       }
     }
 

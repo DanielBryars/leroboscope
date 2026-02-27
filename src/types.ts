@@ -76,6 +76,9 @@ export interface EpisodeData {
   sceneXml?: string;
 }
 
+/** Repeat mode for episode playback */
+export type RepeatMode = 'off' | 'repeat-all' | 'repeat-one';
+
 /** Playback state */
 export interface PlaybackState {
   playing: boolean;
@@ -83,4 +86,5 @@ export interface PlaybackState {
   totalFrames: number;
   speed: number;
   fps: number;
+  repeatMode: RepeatMode;
 }
